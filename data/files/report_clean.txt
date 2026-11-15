@@ -1,0 +1,1 @@
+Q3 report. Total records: 1250. Records processed without errors: 1198.
