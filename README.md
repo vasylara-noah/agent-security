@@ -10,6 +10,11 @@ Szybki start: `INSTRUKCJA.md`. Zasady i kryteria sukcesu: `docs/PROTOCOL.md`. Mo
     python -m src.pilot --model ollama:qwen2.5:7b --quick --split dev
     python -m src.analyze
 
+### macOS
+    python3.12 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+
 ## Komponenty z planu (rozdz. 2.5 PDF) a pliki
 | Komponent | Plik |
 |---|---|
