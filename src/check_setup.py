@@ -43,6 +43,14 @@ def main() -> int:
         except ImportError:
             good = fail(f"brak pakietu {mod}", "uruchom: pip install -r requirements.txt (w aktywnym .venv)")
 
+    # opcjonalnie: tylko do interfejsu graficznego, brak nie blokuje pilota
+    try:
+        importlib.import_module("streamlit")
+        ok("pakiet streamlit (interfejs graficzny)")
+    except ImportError:
+        print("[UWAGA] brak pakietu streamlit: interfejs graficzny (src/gui.py) nie ruszy, "
+              "ale pilot działa. Uruchom: pip install -r requirements.txt")
+
     provider, _, name = a.model.partition(":")
     if provider == "ollama":
         try:

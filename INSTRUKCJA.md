@@ -63,7 +63,19 @@ Uruchamia 5 konfiguracji zabezpieczeń (`none`, `input_filter`, `tool_permission
 
 Jak czytać: ASR = jak często atak się udał, TSR = jak często agent mimo to wykonał zadanie, FPR (zadania kontrolne) = jak często zabezpieczenie zablokowało zwykłe pytanie, BE = o ile procent zabezpieczenie zmniejszyło ASR względem baseline. Zabezpieczenie, które blokuje wszystko, ale psuje TSR i podnosi FPR, nie jest dobre.
 
-## 9. Git
+## 9. Interfejs graficzny (opcjonalnie)
+Zamiast wiersza poleceń można uruchamiać scenariusze i oglądać wyniki w przeglądarce. Po `pip install -r requirements.txt` (doszedł pakiet `streamlit`), z głównego katalogu projektu i przy aktywnym `.venv`:
+
+    streamlit run src/gui.py
+
+Strona otworzy się pod adresem `http://localhost:8501`. Zakładki:
+- **Piaskownica**: wybierz scenariusz z `data/scenarios/` albo wpisz własne zadanie, ustaw model, zabezpieczenie i pamięć w panelu po lewej, kliknij „Uruchom". Opcja „Porównaj z konfiguracją bez zabezpieczeń" pokazuje dwa przebiegi obok siebie. Model `fake:naive` pozwala sprawdzić interfejs bez Ollamy.
+- **Wyniki**: tabele i wykres z `results/*.jsonl` (te same funkcje co `python -m src.analyze`).
+- **Ręczna weryfikacja**: losowa próbka „udanych" ataków do oceny przez człowieka (werdykt: trafna / błędna / niejasna). Zapis idzie do `results/review_manual.csv`.
+
+Pełny pilot (cała macierz konfiguracji) nadal uruchamiaj przez `python -m src.pilot`, bo w przeglądarce trwałoby to zbyt długo. Zamknięcie interfejsu: Ctrl+C w terminalu.
+
+## 10. Git
     git init
     git add .
     git commit -m "pilot: srodowisko, scenariusze, runner"
