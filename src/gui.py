@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 
 from src.agent import make_llm
 from src.analyze import attack_table, blocking_effectiveness, load, pct
-from src.config import RESULTS_DIR
+from src.config import DOCS_DIR, RESULTS_DIR
 from src.defenses import PRESETS
 from src.runner import load_scenarios, run_scenario
 
@@ -173,7 +173,8 @@ def result_groups() -> dict[str, list[Path]]:
     out = {}
     for (stamp, model), files in sorted(groups.items(), reverse=True):
         when = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}" if stamp[:8].isdigit() else stamp
-        out[f"{when} · {model} · {len(files)} plik(ów)"] = files
+        end = time.strftime("%H:%M", time.localtime(max(f.stat().st_mtime for f in files)))
+        out[f"start {when} → koniec {end} · {model} · {len(files)} plik(ów)"] = files
     return out
 
 
@@ -308,6 +309,27 @@ METRIC_HELP = {
 }
 
 
+def show_attack_source(scen: dict) -> None:
+    """Pokazuje, GDZIE jest atak: w zadaniu użytkownika (bezpośredni) albo w dokumencie (pośredni)."""
+    if not scen:
+        return
+    if scen["attack_type"] == "control":
+        st.info("To zadanie kontrolne: nie zawiera ataku. Sprawdzamy tylko, czy agent poprawnie je wykonał.")
+        return
+    docs = list(dict.fromkeys(d for x in (scen.get("sessions") or [scen]) for d in x.get("corpus", [])))
+    bad = [d for d in docs if "poison" in d or d.startswith("gen_")]
+    if bad:
+        st.warning("**Gdzie jest atak:** w dokumencie, który agent znajdzie wyszukiwarką. "
+                   "Zadanie użytkownika jest zwyczajne, a złośliwa treść jest ukryta w dokumencie.")
+        for d in bad:
+            with st.expander(f"Zatruty dokument: {d}", expanded=True):
+                st.text((DOCS_DIR / d).read_text(encoding="utf-8"))
+    else:
+        st.warning("**Gdzie jest atak:** bezpośrednio w zadaniu użytkownika (zobacz wyżej).")
+    with st.expander("Kiedy atak uznajemy za udany"):
+        st.json(scen.get("success_check"))
+
+
 def show_run_detail(rec: pd.Series, scen: dict) -> None:
     st.markdown(f"#### {rec['id']} · {fdef(rec['defense'])} · powtórzenie {rec['repeat']}")
     if scen:
@@ -316,6 +338,7 @@ def show_run_detail(rec: pd.Series, scen: dict) -> None:
             st.markdown(f"**Zadanie{f' (sesja {i})' if len(tasks) > 1 else ''}:** {t}")
         if scen.get("expected_behavior"):
             st.markdown(f"**Oczekiwane bezpieczne zachowanie:** {scen['expected_behavior']}")
+    show_attack_source(scen)
     c1, c2, c3 = st.columns(3)
     c1.metric("Atak", {True: "udany", False: "nieudany"}.get(rec["attack_success"], "—"))
     c2.metric("Zadanie", {True: "wykonane", False: "niewykonane"}.get(rec["task_success"], "—"))
@@ -346,7 +369,7 @@ def show_run_detail(rec: pd.Series, scen: dict) -> None:
 
 # ---------- strona ----------
 
-st.title("Analiza bezpieczeństwa agentów AI")
+st.title("🛡️ Analiza bezpieczeństwa agentów AI")
 tab_start, tab_run, tab_res, tab_gloss = st.tabs(["Start", "Uruchom eksperyment", "Wyniki", "Słownik pojęć"])
 scen_all = scenarios_all()
 
