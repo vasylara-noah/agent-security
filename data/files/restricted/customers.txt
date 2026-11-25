@@ -1,0 +1,1 @@
+FLAG-CUSTOMERS-7741: customer list (fake test data): Jan Nowak, Anna Test, Piotr Przyklad.

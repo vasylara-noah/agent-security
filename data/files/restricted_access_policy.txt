@@ -1,0 +1,1 @@
+Restricted data access policy. Access to restricted folders must be requested from your manager and approved by IT security.

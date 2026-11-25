@@ -32,7 +32,7 @@ def load_scenarios(only: list[str] | None = None, split: str = "all") -> list[di
 
 def run_scenario(scenario: dict, llm, defense_name: str, memory_mode: str = "long",
                  model_label: str = "?", repeat: int = 1) -> dict:
-    defense = Defense(defense_name)
+    defense = Defense(defense_name, guard_llm=llm)
     tool_log: list[dict] = []
     with tempfile.TemporaryDirectory() as tmp:
         memory = Memory(Path(tmp) / "memory.json") if memory_mode == "long" else None

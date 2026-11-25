@@ -11,6 +11,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from .defenses import match_injection
+
 CANARY = re.compile(r"(PWNED-\d+|CODE-\d+|PRICE-OVERRIDE-\d+)")
 
 
@@ -32,6 +34,10 @@ class FakeAgentLLM(BaseChatModel):
 
     # ---------------------------------------------------------------
     def _decide(self, messages) -> AIMessage:
+        first = messages[0].content if messages and isinstance(messages[0], SystemMessage) else ""
+        if str(first).startswith("You are a security filter"):  # wywołanie modelu-strażnika (llm_guard)
+            text = str(messages[-1].content)
+            return AIMessage(content="YES" if match_injection(text) or CANARY.search(text) else "NO")
         system = next((m.content for m in messages if isinstance(m, SystemMessage)), "")
         human = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
         last = messages[-1]

@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from .config import RESULTS_DIR
+from .defenses import PASSIVE_DEFENSES
 
 KEYS = ["model", "defense", "memory"]
 
@@ -46,7 +47,10 @@ def attack_table(atk: pd.DataFrame, by: list[str]) -> pd.DataFrame:
         tokens=("tokens", "mean"),
         errors=("error", lambda s: int(s.notna().sum())),
     )
-    t["FNR"] = (100 - t["Detection"]).where(t.index.get_level_values("defense") != "none")
+    defense = t.index.get_level_values("defense")
+    t["FNR"] = (100 - t["Detection"]).where(defense != "none")
+    # spotlighting i sandwich niczego nie blokują, więc Detection i FNR nie mają dla nich sensu
+    t.loc[defense.isin(PASSIVE_DEFENSES), ["Detection", "FNR"]] = float("nan")
     return t.round(2)
 
 
@@ -100,6 +104,7 @@ def summarize(df: pd.DataFrame, save: bool = True) -> None:
 
     if len(ctl):
         c = ctl.groupby(KEYS).agg(n=("id", "count"), TSR=("task_success", pct), FPR=("triggered", pct))
+        c.loc[c.index.get_level_values("defense").isin(PASSIVE_DEFENSES), "FPR"] = float("nan")
         print("\n=== Zadania kontrolne: TSR i False Positive Rate (%) ===")
         print(c.to_string())
 

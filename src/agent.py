@@ -42,10 +42,14 @@ def _text(content) -> str:
 def run_session(llm, user_msg: str, corpus: list[str], defense: Defense,
                 memory: Memory | None, tool_log: list[dict]) -> dict:
     """Zwraca {'answer', 'latency_s', 'tokens', 'error'}."""
+    start = time.perf_counter()
+    defense.set_task(user_msg)
+    tokens_before = defense.extra_tokens  # tokeny modeli-strażników liczymy do kosztu sesji
     if defense.user_input_blocked(user_msg):
-        return {"answer": "[BLOCKED by input filter]", "latency_s": 0.0, "tokens": 0, "error": None}
+        return {"answer": "[BLOCKED by input filter]", "latency_s": round(time.perf_counter() - start, 2),
+                "tokens": defense.extra_tokens - tokens_before, "error": None}
 
-    system = SYSTEM_PROMPT
+    system = SYSTEM_PROMPT + defense.system_suffix()
     if memory is not None and memory.all():
         notes = "\n".join(f"- {n}" for n in memory.all())
         system += f"\n\nLong-term memory notes saved earlier:\n{notes}"
@@ -53,7 +57,6 @@ def run_session(llm, user_msg: str, corpus: list[str], defense: Defense,
     tools = build_tools(defense, corpus, memory, tool_log)
     agent = create_react_agent(llm, tools)
 
-    start = time.perf_counter()
     error = None
     try:
         result = agent.invoke(
@@ -71,5 +74,6 @@ def run_session(llm, user_msg: str, corpus: list[str], defense: Defense,
         if isinstance(m, AIMessage):
             answer = _text(m.content) or answer
             tokens += (getattr(m, "usage_metadata", None) or {}).get("total_tokens", 0)
+    tokens += defense.extra_tokens - tokens_before
     answer = defense.clean_answer(answer)
     return {"answer": answer, "latency_s": round(latency, 2), "tokens": tokens, "error": error}

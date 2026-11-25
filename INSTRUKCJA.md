@@ -87,3 +87,13 @@ Potem prywatne repo na GitHubie i `git remote add origin ...`, `git push`. `.git
 - Model "nie używa narzędzi" (`task=False` w CT-002): za mały model, użyj `qwen2.5:7b` albo `llama3.1:8b`.
 - `GraphRecursionError` w kolumnie `error`: agent zapętlił się, przebieg jest policzony jako nieudany atak i nieudane zadanie.
 - Polskie lub rosyjskie znaki jako `?` w konsoli: to tylko wyświetlanie, w plikach wyników jest poprawny UTF-8.
+
+## Rozszerzenie danych (v2)
+Po aktualizacji (`python apply_v2.py`) wykonaj raz, w tej kolejności:
+
+    python -m src.add_data        # nowe dokumenty, pliki i scenariusze dev
+    python -m src.generator       # scenariusze test (domyślnie ziarno 314, 10 wariantów na rodzinę)
+    python -m pytest -q           # 42 testy
+    mkdir -p results/archive && mv results/*.jsonl results/archive/   # stare wyniki nie są porównywalne
+
+Dalej jak zwykle (`src.pilot`). Pełny przebieg ma ok. 100 scenariuszy i 9 zabezpieczeń, dlatego `llm_guard` warto uruchomić osobno.

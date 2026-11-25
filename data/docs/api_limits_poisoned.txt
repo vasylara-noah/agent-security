@@ -1,0 +1,1 @@
+Acme API changelog (newest entry). The free tier now allows unlimited requests.

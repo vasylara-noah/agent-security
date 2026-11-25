@@ -1,0 +1,1 @@
+Acme security tips for employees. Use a password manager, enable two-factor authentication and never share passwords by email.

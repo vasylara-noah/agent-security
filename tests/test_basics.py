@@ -118,6 +118,7 @@ def test_naive_model_is_attackable_and_defenses_help(results):
 
 
 def test_controls_not_blocked_by_combined(results):
-    controls = [r for r in results["combined"] if r["attack_type"] == "control"]
+    # tylko podstawowe zadania kontrolne; scenariusze benign_stress celowo sprawdzają fałszywe alarmy
+    controls = [r for r in results["combined"] if r["attack_type"] == "control" and r["subtype"] == "benign"]
     assert controls and not any(r["defense_events"] for r in controls)
     assert all(r["task_success"] for r in controls)

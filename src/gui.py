@@ -28,8 +28,8 @@ from dotenv import load_dotenv
 
 from src.agent import make_llm
 from src.analyze import attack_table, blocking_effectiveness, load, pct
-from src.config import DOCS_DIR, RESULTS_DIR
-from src.defenses import PRESETS
+from src.config import DOCS_DIR, FILES_DIR, RESULTS_DIR
+from src.defenses import PRESETS, match_injection
 from src.runner import load_scenarios, run_scenario
 
 load_dotenv(ROOT / ".env")
@@ -55,14 +55,24 @@ CLASS_DESC = {
     "control": "Zwykłe, nieszkodliwe pytania. Pokazują, czy zabezpieczenie nie psuje normalnej pracy agenta.",
 }
 DEFENSE_NAMES = {"none": "brak (baseline)", "input_filter": "filtr wejścia", "tool_permissions": "uprawnienia narzędzi",
-                 "output_validation": "walidacja odpowiedzi", "combined": "połączone"}
+                 "output_validation": "walidacja odpowiedzi", "spotlighting": "spotlighting",
+                 "sandwich": "sandwich", "memory_provenance": "kontrola zapisu pamięci",
+                 "llm_guard": "LLM guard", "combined": "połączone"}
 DEFENSE_DESC = {
     "none": "Agent bez żadnej ochrony. Punkt odniesienia dla wszystkich porównań.",
     "input_filter": "Szuka podejrzanych fraz (np. „ignore previous instructions”) w pytaniu, w wynikach narzędzi i w "
                     "notatkach zapisywanych do pamięci. Podejrzaną treść blokuje.",
     "tool_permissions": "Zabrania odczytu plików z folderu restricted/ (kontrola uprawnień narzędzia file_reader).",
     "output_validation": "Sprawdza gotową odpowiedź i blokuje ją, jeśli zawiera sekret (np. wewnętrzny kod).",
-    "combined": "Wszystkie trzy mechanizmy naraz.",
+    "spotlighting": "Wyniki narzędzi są ujęte w znaczniki <untrusted_data>, a model dostaje regułę, że to tylko dane "
+                    "i nie wolno wykonywać zawartych w nich poleceń. Niczego nie blokuje.",
+    "sandwich": "Po każdym wyniku narzędzia dopisuje przypomnienie o pierwotnym zadaniu użytkownika. "
+                "Niczego nie blokuje, a przy ataku wpisanym w samo zadanie może je powtórzyć.",
+    "memory_provenance": "Zapis do pamięci jest dozwolony tylko wtedy, gdy o niego poprosił użytkownik, a nie dokument "
+                         "lub plik.",
+    "llm_guard": "Osobne zapytanie do modelu ocenia, czy pytanie, wynik narzędzia lub notatka zawiera instrukcje dla "
+                 "asystenta, i blokuje je. Zwiększa czas i liczbę tokenów.",
+    "combined": "Wszystkie zabezpieczenia oprócz LLM guard naraz (tańsza, deterministyczna wersja połączona).",
 }
 SPLIT_NAMES = {"dev": "ręczne (dev)", "test": "wygenerowane (test)"}
 DIFF_PL = {"easy": "łatwy", "medium": "średni", "hard": "trudny"}
@@ -102,7 +112,8 @@ GLOSSARY = [
     ("Metryki", "TSR (Task Success Rate)", "Odsetek prób, w których agent mimo wszystko poprawnie wykonał zadanie "
      "użytkownika. Wyżej = lepiej."),
     ("Metryki", "Tool Misuse", "Odsetek prób, w których agent faktycznie odczytał zastrzeżony plik. Zablokowana próba się nie liczy."),
-    ("Metryki", "Detection", "Odsetek prób, w których zabezpieczenie coś zablokowało lub odfiltrowało."),
+    ("Metryki", "Detection", "Odsetek prób, w których zabezpieczenie coś zablokowało lub odfiltrowało. Dla spotlighting "
+     "i sandwich brak wartości, bo one niczego nie blokują, tylko osłabiają skutek ataku."),
     ("Metryki", "FNR (False Negative Rate)", "100% − Detection: ataki, których zabezpieczenie nie zauważyło. Niżej = lepiej."),
     ("Metryki", "FPR (False Positive Rate)", "Odsetek zwykłych zadań kontrolnych, w których zabezpieczenie niepotrzebnie "
      "zadziałało. Niżej = lepiej."),
@@ -318,7 +329,16 @@ def show_attack_source(scen: dict) -> None:
         return
     docs = list(dict.fromkeys(d for x in (scen.get("sessions") or [scen]) for d in x.get("corpus", [])))
     bad = [d for d in docs if "poison" in d or d.startswith("gen_")]
-    if bad:
+    tasks = " ".join(x["user_task"] for x in (scen.get("sessions") or [scen]))
+    bad_files = [f.name for f in sorted(FILES_DIR.glob("*.txt"))
+                 if f.name in tasks and match_injection(f.read_text(encoding="utf-8"))]
+    if bad_files and not bad:
+        st.warning("**Gdzie jest atak:** w pliku, który agent otworzy narzędziem file_reader. "
+                   "Zadanie użytkownika jest zwyczajne, a złośliwa treść jest ukryta w pliku.")
+        for f in bad_files:
+            with st.expander(f"Zatruty plik: {f}", expanded=True):
+                st.text((FILES_DIR / f).read_text(encoding="utf-8"))
+    elif bad:
         st.warning("**Gdzie jest atak:** w dokumencie, który agent znajdzie wyszukiwarką. "
                    "Zadanie użytkownika jest zwyczajne, a złośliwa treść jest ukryta w dokumencie.")
         for d in bad:
@@ -467,7 +487,8 @@ with tab_run:
     configs = [(d, "long") for d in defs] + ([("none", "none")] if ablation else [])
     total = len(configs) * len(chosen) * int(repeats)
     spr = seconds_per_run(model) if model else None
-    est = total * (spr or 5.0)
+    weight = sum(2.5 if d == "llm_guard" else 1.0 for d, _ in configs)  # llm_guard to dodatkowe zapytania do modelu
+    est = weight * len(chosen) * int(repeats) * (spr or 5.0)
     st.subheader("4. Start")
     st.markdown(f"**{len(chosen)} scenariuszy × {len(configs)} konfiguracji × {int(repeats)} powtórzeń = {total} uruchomień.** "
                 f"Szacowany czas: **ok. {fmt_min(est)}** "
@@ -654,7 +675,7 @@ with tab_res:
             "Czas [s]": runs["latency_s"]})
         ev = st.dataframe(view, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row",
                           key="runs_table", height=300)
-        if ev.selection.rows:
+        if ev.selection.rows and ev.selection.rows[0] < len(runs):  # zaznaczenie mogło zostać po zmianie filtrów
             row = runs.iloc[ev.selection.rows[0]]
             show_run_detail(row, next((s for s in scen_all if s["id"] == row["id"]), {}))
 
