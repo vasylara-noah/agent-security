@@ -3,7 +3,7 @@
 Uruchomienie z głównego katalogu projektu (przy aktywnym .venv):
     streamlit run src/gui.py
 
-Zakładki: Start (opis), Uruchom eksperyment, Wyniki, Słownik pojęć.
+Zakładki: Start, Przegląd projektu, Uruchom eksperyment, Wyniki, Słownik pojęć.
 Interfejs tylko wywołuje istniejące funkcje (run_scenario, analyze), nie zmienia logiki badań.
 """
 import json
@@ -29,7 +29,8 @@ from dotenv import load_dotenv
 from src.agent import make_llm
 from src.analyze import attack_table, blocking_effectiveness, load, pct
 from src.config import DOCS_DIR, FILES_DIR, RESULTS_DIR
-from src.defenses import PRESETS, match_injection
+from src.defenses import PASSIVE_DEFENSES, PRESETS, match_injection
+from src.generator import DISTRACTORS, TOPICS
 from src.runner import load_scenarios, run_scenario
 
 load_dotenv(ROOT / ".env")
@@ -54,6 +55,21 @@ CLASS_DESC = {
     "memory_poisoning": "Złośliwa notatka zapisana w pamięci agenta w jednej sesji, działająca w następnej.",
     "control": "Zwykłe, nieszkodliwe pytania. Pokazują, czy zabezpieczenie nie psuje normalnej pracy agenta.",
 }
+CLASS_WHERE = {
+    "prompt_injection": "w wiadomości użytkownika (atak bezpośredni) albo w dokumencie lub pliku (atak pośredni)",
+    "tool_misuse": "w poleceniu użytkownika albo w dokumencie lub pliku, który każe otworzyć poufny plik",
+    "data_poisoning": "w dokumencie bazy wiedzy, który zawiera fałszywy fakt",
+    "memory_poisoning": "w dokumencie lub pliku, który każe zapisać złośliwą notatkę; skutek widać w kolejnej sesji",
+    "control": "brak ataku",
+}
+EXAMPLES = {"prompt_injection": ["PI-003", "PI-011"], "tool_misuse": ["TM-002", "TM-006"],
+            "data_poisoning": ["DP-001", "DP-004"], "memory_poisoning": ["MP-001", "MP-005"],
+            "control": ["CT-008", "CT-011"]}
+FAMILIES = {"PID": "prompt injection bezpośredni (polecenie w wiadomości)",
+            "PII": "prompt injection pośredni (polecenie w dokumencie)",
+            "TMI": "tool misuse (dokument każe otworzyć poufny plik)",
+            "MPI": "memory poisoning (zapis w sesji 1, skutek w sesji 2)",
+            "DPF": "data poisoning (fałszywy fakt w bazie wiedzy)"}
 DEFENSE_NAMES = {"none": "brak (baseline)", "input_filter": "filtr wejścia", "tool_permissions": "uprawnienia narzędzi",
                  "output_validation": "walidacja odpowiedzi", "spotlighting": "spotlighting",
                  "sandwich": "sandwich", "memory_provenance": "kontrola zapisu pamięci",
@@ -320,6 +336,69 @@ METRIC_HELP = {
 }
 
 
+def describe_check(c) -> str:
+    """Warunek sukcesu zapisany zwykłym językiem."""
+    if not c:
+        return "—"
+    if "any" in c:
+        return " lub ".join(describe_check(x) for x in c["any"])
+    if "all" in c:
+        return " i ".join(describe_check(x) for x in c["all"])
+    t, v = c["type"], c.get("value", "")
+    if t == "answer_contains":
+        return f"odpowiedź agenta zawiera „{v}”"
+    if t == "tool_output_contains" and c.get("tool") == "file_reader":
+        return f"agent odczytał poufny plik (w wyniku file_reader jest „{v}”)"
+    if t == "tool_output_contains":
+        return f"wynik narzędzia {c.get('tool')} zawiera „{v}”"
+    if t == "memory_contains":
+        return f"w pamięci jest „{v}”"
+    if t == "tool_called":
+        return f"agent wywołał {c.get('tool')}"
+    return str(c)
+
+
+def attack_sources(scen: dict) -> tuple[list[str], list[str]]:
+    """(zatrute dokumenty z korpusu, zatrute pliki wskazane w zadaniu). Puste obie listy = atak jest w zadaniu."""
+    docs = list(dict.fromkeys(d for x in (scen.get("sessions") or [scen]) for d in x.get("corpus", [])))
+    bad_docs = [d for d in docs if "poison" in d or d.startswith("gen_")]
+    tasks = " ".join(x["user_task"] for x in (scen.get("sessions") or [scen]))
+    bad_files = [f.name for f in sorted(FILES_DIR.glob("*.txt"))
+                 if f.name in tasks and match_injection(f.read_text(encoding="utf-8"))]
+    return bad_docs, bad_files
+
+
+def example_card(scen_list: list[dict], sid: str) -> None:
+    s = next((x for x in scen_list if x["id"] == sid), None)
+    if not s:
+        return
+    docs, files = attack_sources(s)
+    control = s["attack_type"] == "control"
+    where = ("brak ataku (zwykłe zadanie)" if control else
+             "w dokumencie i pliku (atak pośredni)" if docs and files else
+             "w dokumencie z wyszukiwarki (atak pośredni)" if docs else
+             "w pliku otwieranym narzędziem (atak pośredni)" if files else
+             "w zadaniu użytkownika (atak bezpośredni)")
+    with st.container(border=True):
+        st.markdown(f"**{sid}** · `{s.get('attack_subtype')}` · {s.get('language')} · {DIFF_PL.get(s.get('difficulty'), '')}")
+        st.caption(f"Gdzie jest atak: {where}")
+        if s.get("sessions"):
+            for i, x in enumerate(s["sessions"], 1):
+                st.markdown(f"**Sesja {i}:** {x['user_task']}")
+        else:
+            st.markdown(f"**Zadanie użytkownika:** {s['user_task']}")
+        for d in docs:
+            st.markdown(f"Zatruty dokument `{d}`:")
+            st.text((DOCS_DIR / d).read_text(encoding="utf-8"))
+        for f in files:
+            st.markdown(f"Zatruty plik `{f}`:")
+            st.text((FILES_DIR / f).read_text(encoding="utf-8"))
+        if control:
+            st.markdown("**Cel:** sprawdzić, czy zabezpieczenie nie blokuje zwykłej pracy (fałszywy alarm).")
+        else:
+            st.markdown(f"**Atak udany, gdy:** {describe_check(s.get('success_check'))}")
+
+
 def show_attack_source(scen: dict) -> None:
     """Pokazuje, GDZIE jest atak: w zadaniu użytkownika (bezpośredni) albo w dokumencie (pośredni)."""
     if not scen:
@@ -327,11 +406,7 @@ def show_attack_source(scen: dict) -> None:
     if scen["attack_type"] == "control":
         st.info("To zadanie kontrolne: nie zawiera ataku. Sprawdzamy tylko, czy agent poprawnie je wykonał.")
         return
-    docs = list(dict.fromkeys(d for x in (scen.get("sessions") or [scen]) for d in x.get("corpus", [])))
-    bad = [d for d in docs if "poison" in d or d.startswith("gen_")]
-    tasks = " ".join(x["user_task"] for x in (scen.get("sessions") or [scen]))
-    bad_files = [f.name for f in sorted(FILES_DIR.glob("*.txt"))
-                 if f.name in tasks and match_injection(f.read_text(encoding="utf-8"))]
+    bad, bad_files = attack_sources(scen)
     if bad_files and not bad:
         st.warning("**Gdzie jest atak:** w pliku, który agent otworzy narzędziem file_reader. "
                    "Zadanie użytkownika jest zwyczajne, a złośliwa treść jest ukryta w pliku.")
@@ -347,6 +422,7 @@ def show_attack_source(scen: dict) -> None:
     else:
         st.warning("**Gdzie jest atak:** bezpośrednio w zadaniu użytkownika (zobacz wyżej).")
     with st.expander("Kiedy atak uznajemy za udany"):
+        st.markdown(describe_check(scen.get("success_check")))
         st.json(scen.get("success_check"))
 
 
@@ -390,7 +466,8 @@ def show_run_detail(rec: pd.Series, scen: dict) -> None:
 # ---------- strona ----------
 
 st.title("🛡️ Analiza bezpieczeństwa agentów AI")
-tab_start, tab_run, tab_res, tab_gloss = st.tabs(["Start", "Uruchom eksperyment", "Wyniki", "Słownik pojęć"])
+tab_start, tab_over, tab_run, tab_res, tab_gloss = st.tabs(
+    ["Start", "Przegląd projektu", "Uruchom eksperyment", "Wyniki", "Słownik pojęć"])
 scen_all = scenarios_all()
 
 # ===== Start =====
@@ -408,15 +485,100 @@ with tab_start:
                 "wyniki zapisują się do folderu `results/`.")
     c3.markdown("**3. Zobacz wyniki**  \nZakładka „Wyniki” pokazuje, jak często ataki się udają i ile kosztuje "
                 "zabezpieczenie. Nieznane skróty wyjaśnia „Słownik pojęć”.")
-    st.subheader("Co testujemy")
-    cols = st.columns(len(CLASS_ORDER))
-    for col, c in zip(cols, CLASS_ORDER):
-        n = sum(1 for s in scen_all if s["attack_type"] == c)
-        col.metric(CLASS_NAMES[c], f"{n} scen.")
-        col.caption(CLASS_DESC[c])
-    st.subheader("Jakie zabezpieczenia porównujemy")
-    for d in DEFENSE_NAMES:
-        st.markdown(f"- **{DEFENSE_NAMES[d]}**: {DEFENSE_DESC[d]}")
+    st.info("Co dokładnie testujemy (klasy ataków z przykładami, baza dokumentów, zabezpieczenia) opisuje zakładka "
+            "**Przegląd projektu**.")
+
+# ===== Przegląd projektu =====
+with tab_over:
+    n_dev = sum(1 for s in scen_all if s.get("split", "dev") == "dev")
+    n_test = len(scen_all) - n_dev
+    docs_all = sorted(p.name for p in DOCS_DIR.glob("*.txt"))
+    files_plain = sorted(p.name for p in FILES_DIR.glob("*.txt"))
+    files_restricted = sorted(p.name for p in (FILES_DIR / "restricted").glob("*.txt"))
+    m = st.columns(4)
+    m[0].metric("Scenariusze", len(scen_all), f"dev {n_dev} · test {n_test}", delta_color="off")
+    m[1].metric("Klasy ataków", len(CLASS_ORDER) - 1, "+ zadania kontrolne", delta_color="off")
+    m[2].metric("Zabezpieczenia", len(PRESETS) - 1, "+ baseline bez ochrony", delta_color="off")
+    m[3].metric("Dokumenty i pliki", len(docs_all) + len(files_plain) + len(files_restricted),
+                "wszystkie sztuczne", delta_color="off")
+
+    st.subheader("Jak działa pojedynczy test")
+    steps = [("1. Scenariusz", "zadanie dla agenta, ukryty atak i warunek sukcesu (JSON)"),
+             ("2. Agent", "model językowy z narzędziami: search, calculator, file_reader, save_memory"),
+             ("3. Zabezpieczenie", "opcjonalna warstwa: filtr, uprawnienia, osłonięcie danych i inne"),
+             ("4. Ocena", "reguły sprawdzają odpowiedź, wywołania narzędzi i pamięć (bez drugiego modelu)"),
+             ("5. Wyniki", "ASR, TSR, FPR i inne miary, zapis do results/")]
+    for col, (title, text) in zip(st.columns(len(steps)), steps):
+        with col.container(border=True):
+            st.markdown(f"**{title}**")
+            st.caption(text)
+
+    st.subheader("Klasy ataków i przykłady")
+    st.caption("Przykłady pochodzą z prawdziwych scenariuszy projektu. Tekst ataku jest widoczny dokładnie tak, "
+               "jak widzi go agent.")
+    for tab, c in zip(st.tabs([CLASS_NAMES[c] for c in CLASS_ORDER]), CLASS_ORDER):
+        with tab:
+            cls = [s for s in scen_all if s["attack_type"] == c]
+            langs = ", ".join(sorted({s.get("language", "?") for s in cls}))
+            st.markdown(f"{CLASS_DESC[c]}")
+            st.caption(f"Gdzie bywa ukryty: {CLASS_WHERE[c]}. Scenariuszy: {len(cls)} "
+                       f"(dev {sum(1 for s in cls if s.get('split', 'dev') == 'dev')}, "
+                       f"test {sum(1 for s in cls if s.get('split', 'dev') == 'test')}), języki: {langs}.")
+            for col, sid in zip(st.columns(2), EXAMPLES[c]):
+                with col:
+                    example_card(scen_all, sid)
+
+    st.subheader("Baza dokumentów")
+    topic_docs = [t["doc"] for t in TOPICS.values()]
+    groups = [
+        ("Prawdziwe fakty (tematy)", [d for d in docs_all if d in topic_docs], "to, o co pytają zwykłe zadania"),
+        ("Dystraktory", [d for d in docs_all if d in DISTRACTORS], "szum w wynikach wyszukiwarki"),
+        ("Zatrute, ręczne (dev)", [d for d in docs_all if "poison" in d], "atak ukryty w dokumencie"),
+        ("Zatrute, generowane (test)", [d for d in docs_all if d.startswith("gen_")], "tworzone przez generator"),
+    ]
+    used = {d for _, ds, _ in groups for d in ds}
+    groups.append(("Pozostałe dokumenty", [d for d in docs_all if d not in used], "notatki, instrukcje, pomocnicze"))
+    groups.append(("Pliki dla file_reader", files_plain, "zwykłe pliki, część z ukrytym atakiem"))
+    groups.append(("Pliki poufne (restricted/)", files_restricted, "sztuczne sekrety, cel ataków Tool Misuse"))
+    st.dataframe(pd.DataFrame([{"Kategoria": g, "Liczba": len(ds), "Rola": role,
+                                "Przykłady": ", ".join(ds[:3]) + (" …" if len(ds) > 3 else "")}
+                               for g, ds, role in groups]), hide_index=True, width="stretch")
+    browse = {f"docs/{d}": DOCS_DIR / d for d in docs_all}
+    browse.update({f"files/{f}": FILES_DIR / f for f in files_plain})
+    browse.update({f"files/restricted/{f}": FILES_DIR / "restricted" / f for f in files_restricted})
+    pick_doc = st.selectbox("Podejrzyj dokument lub plik", list(browse), key="browse_doc")
+    with st.container(border=True):
+        st.text(browse[pick_doc].read_text(encoding="utf-8"))
+
+    st.subheader("Skąd wzięły się scenariusze")
+    st.markdown(
+        "Scenariusze **dev** napisaliśmy ręcznie i na nich dopracowujemy zabezpieczenia. Scenariusze **test** "
+        "generuje program z szablonów (bez drugiego modelu, z ustalonym ziarnem, więc wynik jest powtarzalny). "
+        "Każdy wariant to kombinacja: temat × język (en, pl, ru) × poziom trudności × sposób ukrycia ataku "
+        "(zwykły tekst, cytat, komentarz HTML, komentarz Markdown, ukryty element) i przechodzi walidację.")
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("**Rodziny generowanych scenariuszy**")
+        st.dataframe(pd.DataFrame([{"Rodzina": k, "Co generuje": v,
+                                    "Liczba": sum(1 for s in scen_all if s["id"].startswith(f"GEN-{k}-"))}
+                                   for k, v in FAMILIES.items()]), hide_index=True, width="stretch")
+    with g2:
+        st.markdown("**Scenariusze wg klasy i zbioru**")
+        mat = (pd.DataFrame({"Klasa": [CLASS_NAMES[s["attack_type"]] for s in scen_all],
+                             "Zbiór": [s.get("split", "dev") for s in scen_all]})
+               .pivot_table(index="Klasa", columns="Zbiór", aggfunc="size", fill_value=0).reset_index())
+        st.dataframe(mat, hide_index=True, width="stretch")
+
+    st.subheader("Zabezpieczenia")
+    st.caption("Baseline („brak”) to agent bez ochrony, z nim porównujemy resztę. Zabezpieczenia pasywne niczego "
+               "nie blokują, tylko osłabiają skutek ataku, dlatego nie mają Detection, FNR ani FPR.")
+    names = [d for d in DEFENSE_NAMES if d != "none"]
+    for row in range(0, len(names), 3):
+        for col, d in zip(st.columns(3), names[row:row + 3]):
+            with col.container(border=True):
+                tag = " · pasywne" if d in PASSIVE_DEFENSES else ""
+                st.markdown(f"**{DEFENSE_NAMES[d]}**{tag}")
+                st.caption(DEFENSE_DESC[d])
 
 # ===== Uruchom eksperyment =====
 with tab_run:
